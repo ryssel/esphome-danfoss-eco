@@ -255,8 +255,7 @@ namespace esphome
         ESP_LOGD(TAG, "[%s] re-enabling ble_client", this->get_name().c_str());
         parent()->set_enabled(true);
       }
-      // gap scanning interferes with connection attempts, which results in esp_gatt_status_t::ESP_GATT_ERROR (0x85)
-      esp_ble_gap_stop_scanning();
+      
       this->parent()->connect(); // trigger BLE connection attempt
     }
 
