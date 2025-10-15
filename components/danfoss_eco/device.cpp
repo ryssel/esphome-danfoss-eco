@@ -258,7 +258,7 @@ namespace esphome
       }
       // gap scanning interferes with connection attempts, which results in esp_gatt_status_t::ESP_GATT_ERROR (0x85)
       esp_ble_gap_stop_scanning();
-      this->parent()->set_state(ClientState::READY_TO_CONNECT); // this will cause ble_client to attempt connect() from its loop()
+      this->parent()->connect(); // trigger BLE connection attempt
     }
 
     void Device::disconnect()
