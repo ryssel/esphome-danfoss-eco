@@ -31,7 +31,7 @@ namespace esphome
       void dump_config() override
       {
         LOG_CLIMATE("", "Danfoss Eco eTRV", this);
-        ESP_LOGCONFIG(TAG, "  MAC Address: %s", this->parent()->address_str().c_str());
+        ESP_LOGCONFIG(TAG, "  MAC Address: %s", this->parent()->address_str());
         LOG_SENSOR("", "Battery Level", this->battery_level_);
         LOG_SENSOR("", "Room Temperature", this->temperature_);
         LOG_BINARY_SENSOR("", "Problems", this->problems_);
