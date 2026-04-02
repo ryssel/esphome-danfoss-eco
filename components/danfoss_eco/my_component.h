@@ -24,14 +24,18 @@ namespace esphome
             ClimateTraits traits() override
             {
                 auto traits = ClimateTraits();
-                traits.set_supports_current_temperature(true);
-
-                traits.set_supported_modes(set<ClimateMode>({ClimateMode::CLIMATE_MODE_HEAT, ClimateMode::CLIMATE_MODE_AUTO}));
+                traits.set_supported_modes({ClimateMode::CLIMATE_MODE_HEAT, ClimateMode::CLIMATE_MODE_AUTO});
                 traits.set_visual_temperature_step(0.5);
-
-                traits.set_supports_current_temperature(true); // supports reporting current temperature
-                traits.set_supports_action(true);              // supports reporting current action
+                traits.set_visual_min_temperature(this->visual_min_temperature_);
+                traits.set_visual_max_temperature(this->visual_max_temperature_);
+                traits.add_feature_flags(climate::CLIMATE_SUPPORTS_CURRENT_TEMPERATURE | climate::CLIMATE_SUPPORTS_ACTION);
                 return traits;
+            }
+
+            void set_temperature_range(float min_temp, float max_temp)
+            {
+                this->visual_min_temperature_ = min_temp;
+                this->visual_max_temperature_ = max_temp;
             }
 
             void set_battery_level(Sensor *battery_level) { battery_level_ = battery_level; }
@@ -48,6 +52,8 @@ namespace esphome
             Sensor *battery_level_{nullptr};
             Sensor *temperature_{nullptr};
             BinarySensor *problems_{nullptr};
+            float visual_min_temperature_{5.0f};
+            float visual_max_temperature_{30.0f};
         };
 
     } // namespace danfoss_eco
