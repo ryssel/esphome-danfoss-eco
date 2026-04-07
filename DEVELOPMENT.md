@@ -21,7 +21,7 @@ Contains four files that configure the development experience in VS Code:
 - **`c_cpp_properties.json`** — C/C++ IntelliSense configuration with ~170 include paths from the ESPHome/PlatformIO build, preprocessor defines (e.g. `USE_CLIMATE`, `USE_ESP32_BLE_CLIENT`), forced includes, and compiler settings (xtensa-esp-elf-g++, C++17).
 - **`compile_commands.json`** — Custom-generated compilation database that maps the workspace `.cpp` files to the build's compiler flags. This is derived from PlatformIO's output but with additional include paths and forced includes added.
 - **`settings.json`** — Workspace settings, notably `C_Cpp.errorSquiggles: "enabled"` (required when using compileCommands) and file associations.
-- **`tasks.json`** — Build task ("ESPHome: Compile") that compiles via the junction path.
+- **`tasks.json`** — Build task ("ESPHome: Compile") that compiles the intellisense_build.yaml.
 
 ## Getting started after cloning
 
@@ -30,41 +30,29 @@ Contains four files that configure the development experience in VS Code:
 - [PlatformIO](https://platformio.org/) installed (ESPHome installs it as a dependency)
 - VS Code with the [C/C++ extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode.cpptools)
 
-### Step 1: Create a directory junction
-
-PlatformIO cannot build from paths that contain spaces. Since the workspace path likely contains spaces, create a junction:
+### Step 1: Create and activate a Python virtual environment
 
 ```powershell
-New-Item -ItemType Junction -Path "C:\esphome-build" -Target "C:\git\Home Assistant integrations\Danfoss ECO2\esphome-danfoss-eco"
-```
-
-### Step 2: Create and activate a Python virtual environment
-
-```powershell
-cd "C:\git\Home Assistant integrations\Danfoss ECO2\esphome-danfoss-eco"
+cd C:\git-homeassistant\esphome-danfoss-eco
 python -m venv .venv
 & '.venv\Scripts\Activate.ps1'
 ```
 
-### Step 3: Install ESPHome
+### Step 2: Install ESPHome
 
 ```powershell
 pip install esphome
 ```
 
-### Step 4: Run the first build
-
-The build must be run from the junction path:
+### Step 3: Run the first build
 
 ```powershell
-Push-Location C:\esphome-build
 esphome compile intellisense_build.yaml
-Pop-Location
 ```
 
 This generates the `.esphome/` folder with all build artifacts. After this, you can use the VS Code build task (**Ctrl+Shift+B**) for subsequent builds.
 
-### Step 5: Set up IntelliSense
+### Step 4: Set up IntelliSense
 
 Create the `.vscode/` folder and its configuration files. The key files are `c_cpp_properties.json`, `compile_commands.json`, `settings.json`, and `tasks.json`.
 
@@ -74,9 +62,9 @@ After a successful build, generate the custom compile_commands.json by running t
 
 ```powershell
 $json = Get-Content ".esphome\build\intellisense-build\.pioenvs\intellisense-build\compile_commands.json" -Raw | ConvertFrom-Json
-$wsRoot = "C:/git/Home Assistant integrations/Danfoss ECO2/esphome-danfoss-eco"
+$wsRoot = "C:/git-homeassistant/esphome-danfoss-eco"
 $entries = $json | Where-Object { $_.file -match "danfoss_eco" }
-$extraPaths = "-IC:/esphome-build/.esphome/build/intellisense-build/src -IC:/esphome-build/.esphome/build/intellisense-build/.piolibdeps/intellisense-build/xxtea-iot-crypt/src -IC:/Users/lr/.platformio/packages/toolchain-xtensa-esp-elf/xtensa-esp-elf/include/c++/14.2.0 -IC:/Users/lr/.platformio/packages/toolchain-xtensa-esp-elf/xtensa-esp-elf/include/c++/14.2.0/xtensa-esp-elf -IC:/Users/lr/.platformio/packages/toolchain-xtensa-esp-elf/lib/gcc/xtensa-esp-elf/14.2.0/include -IC:/Users/lr/.platformio/packages/toolchain-xtensa-esp-elf/lib/gcc/xtensa-esp-elf/14.2.0/include-fixed -IC:/Users/lr/.platformio/packages/toolchain-xtensa-esp-elf/xtensa-esp-elf/include -IC:/Users/lr/.platformio/packages/toolchain-xtensa-esp-elf/picolibc/include -IC:/Users/lr/.platformio/packages/framework-arduinoespressif32/variants/esp32 -IC:/Users/lr/.platformio/packages/framework-arduinoespressif32/cores/esp32 -include C:/esphome-build/.esphome/build/intellisense-build/src/esphome/core/defines.h"
+$extraPaths = "-IC:/git-homeassistant/esphome-danfoss-eco/.esphome/build/intellisense-build/src -IC:/git-homeassistant/esphome-danfoss-eco/.esphome/build/intellisense-build/.piolibdeps/intellisense-build/xxtea-iot-crypt/src -IC:/Users/lr/.platformio/packages/toolchain-xtensa-esp-elf/xtensa-esp-elf/include/c++/14.2.0 -IC:/Users/lr/.platformio/packages/toolchain-xtensa-esp-elf/xtensa-esp-elf/include/c++/14.2.0/xtensa-esp-elf -IC:/Users/lr/.platformio/packages/toolchain-xtensa-esp-elf/lib/gcc/xtensa-esp-elf/14.2.0/include -IC:/Users/lr/.platformio/packages/toolchain-xtensa-esp-elf/lib/gcc/xtensa-esp-elf/14.2.0/include-fixed -IC:/Users/lr/.platformio/packages/toolchain-xtensa-esp-elf/xtensa-esp-elf/include -IC:/Users/lr/.platformio/packages/toolchain-xtensa-esp-elf/picolibc/include -IC:/Users/lr/.platformio/packages/framework-arduinoespressif32/variants/esp32 -IC:/Users/lr/.platformio/packages/framework-arduinoespressif32/cores/esp32 -include C:/git-homeassistant/esphome-danfoss-eco/.esphome/build/intellisense-build/src/esphome/core/defines.h"
 $newEntries = @()
 foreach ($e in $entries) {
     $fileName = [System.IO.Path]::GetFileName($e.file)
@@ -113,7 +101,7 @@ This file needs ~170 include paths extracted from the build's idedata. You can f
         {
             "label": "ESPHome: Compile",
             "type": "shell",
-            "command": "Push-Location C:\\esphome-build; & '.venv\\Scripts\\Activate.ps1'; esphome compile intellisense_build.yaml; Pop-Location",
+            "command": "& '.venv\\Scripts\\Activate.ps1'; esphome compile intellisense_build.yaml",
             "group": {
                 "kind": "build",
                 "isDefault": true
