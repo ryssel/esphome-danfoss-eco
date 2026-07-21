@@ -59,6 +59,7 @@ climate:
     temperature:
       name: "My Room eTRV Temperature"
     update_interval: 30min
+    request_timeout: 15s
 ```
 
 ### Obtaining the `secret_key`
@@ -90,6 +91,13 @@ Configuration options
 - **secret_key** (**Required**, string): Device encryption key, 16 characters.
 - **battery_level** (**Optional**, string): Remaining battery level sensor name. Sensor will not be created, if the name is not provided.
 - **temperature** (**Optional**, string): Current temperature (Celsius) sensor name. Sensor will not be created, if the name is not provided.
+- **request_timeout** (**Optional**, duration, default=`15s`): Maximum time to wait for in-flight BLE request responses before forcing disconnect and retry.
+
+`request_timeout` tuning guidance:
+
+- Use `10s` to `15s` in stable BLE environments for faster recovery from stalled requests.
+- Use `20s` to `30s` in noisy BLE environments to reduce false watchdog timeouts.
+- The component applies capped backoff after repeated timeouts and resets to the configured value after disconnect/recovery.
 
 > **NOTE:** Find more configuration examples in the repository root folder.
 

@@ -1,5 +1,7 @@
 #include "device.h"
+#include <algorithm>
 #include <cmath>
+#include <esp_timer.h>
 
 #ifdef USE_ESP32
 
@@ -7,8 +9,21 @@ namespace esphome
 {
   namespace danfoss_eco
   {
+    static bool startup_marker_logged = false;
+
+    static uint32_t now_ms()
+    {
+      return static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
+    }
+
     void Device::setup()
     {
+      if (!startup_marker_logged)
+      {
+        startup_marker_logged = true;
+        ESP_LOGI(TAG, "[BLE_FLOW][BUILD_MARKER] danfoss_eco_ble_hardening_v3 compiled %s %s", __DATE__, __TIME__);
+      }
+
       shared_ptr<MyComponent> sp_this(this);
 
       this->p_pin = make_shared<WritableProperty>(sp_this, xxtea, SERVICE_SETTINGS, CHARACTERISTIC_PIN);
@@ -21,27 +36,88 @@ namespace esphome
       this->properties = {this->p_pin, this->p_battery, this->p_temperature, this->p_settings, this->p_errors, this->p_secret_key};
       // pretend, we have already discovered the device
       copy_address(this->parent()->get_address(), this->parent()->get_remote_bda());
+
+      const uint8_t *bda = this->parent()->get_remote_bda();
+      const uint16_t seed = (static_cast<uint16_t>(bda[4]) << 8) | bda[5];
+      this->poll_spread_ms_ = 200 + (seed % 3000);
+      ESP_LOGD(TAG, "[%s][BLE_FLOW] periodic poll spread configured: %u ms", this->get_name().c_str(), static_cast<unsigned>(this->poll_spread_ms_));
     }
 
     void Device::loop()
     {
       if (this->status_has_error())
       {
-        this->disconnect();
+        this->teardown_connection_(true, true, "status error");
         this->status_clear_error();
       }
 
+      if (this->scheduled_poll_pending_ && static_cast<int32_t>(now_ms() - this->scheduled_poll_due_ms_) >= 0)
+      {
+        this->scheduled_poll_pending_ = false;
+        this->connect();
+        this->request_device_state_();
+      }
+
       if (this->node_state != ClientState::ESTABLISHED)
+      {
+        if (this->node_state == ClientState::IDLE && !this->commands_.empty())
+        {
+          ESP_LOGD(TAG, "[%s][BLE_FLOW] idle with queued work (%u), reconnecting", this->get_name().c_str(), static_cast<unsigned>(this->commands_.size()));
+          this->connect();
+        }
         return;
+      }
 
       Command *cmd = this->commands_.pop();
       while (cmd != nullptr)
       {
-        if (cmd->execute(this->parent()))
+        const char *command_type = cmd->type == CommandType::WRITE ? "WRITE" : "READ";
+        uint16_t handle = cmd->property != nullptr ? cmd->property->handle : INVALID_HANDLE;
+
+        const bool request_sent = cmd->execute(this->parent());
+        ESP_LOGD(TAG, "[%s][BLE_FLOW] queued %s request: handle=%#04x, sent=%d", this->get_name().c_str(), command_type, handle, request_sent);
+
+        if (request_sent)
+        {
+          if (this->request_counter_ == 0xFF)
+          {
+            ESP_LOGW(TAG, "[%s] request counter overflow guard hit, forcing disconnect", this->get_name().c_str());
+            delete cmd;
+            this->teardown_connection_(true, true, "request counter overflow");
+            return;
+          }
+
           this->request_counter_++;
+          ESP_LOGD(TAG, "[%s][BLE_FLOW] pending requests incremented: %u", this->get_name().c_str(), static_cast<unsigned>(this->request_counter_));
+
+          if (!this->request_watchdog_active_)
+          {
+            this->request_watchdog_active_ = true;
+            this->request_watchdog_started_ms_ = now_ms();
+            const uint32_t timeout_factor = 1U << this->timeout_backoff_level_;
+            this->request_watchdog_timeout_ms_ = std::min(this->request_timeout_ms_ * timeout_factor, REQUEST_TIMEOUT_MAX_MS);
+            ESP_LOGV(TAG, "[%s][BLE_FLOW] request watchdog started (%u ms, backoff level=%u)", this->get_name().c_str(), this->request_watchdog_timeout_ms_, static_cast<unsigned>(this->timeout_backoff_level_));
+          }
+        }
 
         delete cmd;
         cmd = this->commands_.pop();
+      }
+
+      if (this->request_watchdog_active_ && this->request_counter_ > 0)
+      {
+        const uint32_t elapsed_ms = now_ms() - this->request_watchdog_started_ms_;
+        if (elapsed_ms >= this->request_watchdog_timeout_ms_)
+        {
+          ESP_LOGW(TAG, "[%s][BLE_FLOW] request watchdog timeout: elapsed=%u ms, pending=%u - forcing disconnect", this->get_name().c_str(), static_cast<unsigned>(elapsed_ms), static_cast<unsigned>(this->request_counter_));
+          if (this->timeout_backoff_level_ < 5)
+            this->timeout_backoff_level_++;
+
+          this->preserve_backoff_on_next_disconnect_ = true;
+
+          this->teardown_connection_(true, false, "request watchdog timeout");
+          return;
+        }
       }
 
       // once we are done with pending commands - check to see if there are any pending requests
@@ -52,16 +128,11 @@ namespace esphome
 
     void Device::update()
     {
-      this->connect();
-
-      if (this->xxtea->status() == XXTEA_STATUS_SUCCESS)
+      if (!this->scheduled_poll_pending_)
       {
-        ESP_LOGI(TAG, "[%s] requesting device state", this->get_name().c_str());
-
-        this->commands_.push(new Command(CommandType::READ, this->p_battery));
-        this->commands_.push(new Command(CommandType::READ, this->p_temperature));
-        this->commands_.push(new Command(CommandType::READ, this->p_settings));
-        this->commands_.push(new Command(CommandType::READ, this->p_errors));
+        this->scheduled_poll_pending_ = true;
+        this->scheduled_poll_due_ms_ = now_ms() + this->poll_spread_ms_;
+        ESP_LOGD(TAG, "[%s][BLE_FLOW] periodic poll scheduled in %u ms", this->get_name().c_str(), static_cast<unsigned>(this->poll_spread_ms_));
       }
     }
 
@@ -153,7 +224,12 @@ namespace esphome
         break;
 
       case ESP_GATTC_DISCONNECT_EVT:
-        ESP_LOGD(TAG, "[%s] disconnect, conn_id=%d, reason=%#04x", this->get_name().c_str(), param->disconnect.conn_id, (int)param->disconnect.reason);
+      {
+        const bool reset_backoff = !this->preserve_backoff_on_next_disconnect_;
+        ESP_LOGD(TAG, "[%s][BLE_FLOW] disconnect, conn_id=%d, reason=%#04x, reset_backoff=%d, backoff_level=%u", this->get_name().c_str(), param->disconnect.conn_id, (int)param->disconnect.reason, reset_backoff, static_cast<unsigned>(this->timeout_backoff_level_));
+        this->preserve_backoff_on_next_disconnect_ = false;
+        this->teardown_connection_(false, reset_backoff, "gatt disconnect event");
+      }
         break;
 
       case ESP_GATTC_SEARCH_CMPL_EVT:
@@ -193,7 +269,23 @@ namespace esphome
 
     void Device::on_read(esp_ble_gattc_cb_param_t::gattc_read_char_evt_param param)
     {
+      ESP_LOGD(TAG, "[%s][BLE_FLOW] read response: handle=%#04x, status=%#04x", this->get_name().c_str(), param.handle, param.status);
+      if (this->request_counter_ == 0)
+      {
+        ESP_LOGW(TAG, "[%s][BLE_FLOW] read response with empty pending counter", this->get_name().c_str());
+        return;
+      }
+
       this->request_counter_--;
+      ESP_LOGD(TAG, "[%s][BLE_FLOW] pending requests decremented after read: %u", this->get_name().c_str(), static_cast<unsigned>(this->request_counter_));
+
+      if (this->request_counter_ == 0)
+      {
+        this->request_watchdog_active_ = false;
+        this->request_watchdog_timeout_ms_ = this->request_timeout_ms_;
+        this->timeout_backoff_level_ = 0;
+      }
+
       if (param.status != ESP_GATT_OK)
       {
         ESP_LOGW(TAG, "[%s] failed to read characteristic: handle=%#04x, status=%#04x", this->get_name().c_str(), param.handle, param.status);
@@ -212,11 +304,40 @@ namespace esphome
 
     void Device::on_write(esp_ble_gattc_cb_param_t::gattc_write_evt_param param)
     {
+      ESP_LOGD(TAG, "[%s][BLE_FLOW] write response: handle=%#04x, status=%#04x", this->get_name().c_str(), param.handle, param.status);
+      if (this->request_counter_ == 0)
+      {
+        ESP_LOGW(TAG, "[%s][BLE_FLOW] write response with empty pending counter", this->get_name().c_str());
+        return;
+      }
+
       this->request_counter_--;
+      ESP_LOGD(TAG, "[%s][BLE_FLOW] pending requests decremented after write: %u", this->get_name().c_str(), static_cast<unsigned>(this->request_counter_));
+
+      if (this->request_counter_ == 0)
+      {
+        this->request_watchdog_active_ = false;
+        this->request_watchdog_timeout_ms_ = this->request_timeout_ms_;
+        this->timeout_backoff_level_ = 0;
+      }
+
       if (param.status != ESP_GATT_OK)
         ESP_LOGW(TAG, "[%s] failed to write characteristic: handle=%#04x, status=%#04x", this->get_name().c_str(), param.handle, param.status);
       else
-        update();
+        this->request_device_state_();
+    }
+
+    void Device::request_device_state_()
+    {
+      if (this->xxtea->status() != XXTEA_STATUS_SUCCESS)
+        return;
+
+      ESP_LOGI(TAG, "[%s] requesting device state", this->get_name().c_str());
+
+      this->commands_.push(new Command(CommandType::READ, this->p_battery));
+      this->commands_.push(new Command(CommandType::READ, this->p_temperature));
+      this->commands_.push(new Command(CommandType::READ, this->p_settings));
+      this->commands_.push(new Command(CommandType::READ, this->p_errors));
     }
 
     void Device::on_write_pin(esp_ble_gattc_cb_param_t::gattc_write_evt_param param)
@@ -261,7 +382,37 @@ namespace esphome
 
     void Device::disconnect()
     {
+      this->teardown_connection_(false, true, "normal disconnect");
+    }
+
+    void Device::set_request_timeout_ms(uint32_t timeout_ms)
+    {
+      this->request_timeout_ms_ = std::max(REQUEST_TIMEOUT_MIN_MS, std::min(timeout_ms, REQUEST_TIMEOUT_MAX_MS));
+      this->request_watchdog_timeout_ms_ = this->request_timeout_ms_;
+
+      ESP_LOGD(TAG, "[%s][BLE_FLOW] request timeout configured: %u ms", this->get_name().c_str(), this->request_timeout_ms_);
+    }
+
+    void Device::teardown_connection_(bool clear_queue, bool reset_backoff, const char *reason)
+    {
+      if (this->request_counter_ > 0 || !this->commands_.empty())
+      {
+        ESP_LOGW(TAG, "[%s][BLE_FLOW] teardown (%s): pending=%u, queued=%u, clear_queue=%d, reset_backoff=%d", this->get_name().c_str(), reason, static_cast<unsigned>(this->request_counter_), static_cast<unsigned>(this->commands_.size()), clear_queue, reset_backoff);
+      }
+
       this->parent()->set_enabled(false);
+      this->request_counter_ = 0;
+      this->request_watchdog_active_ = false;
+
+      if (reset_backoff)
+      {
+        this->request_watchdog_timeout_ms_ = this->request_timeout_ms_;
+        this->timeout_backoff_level_ = 0;
+      }
+
+      if (clear_queue)
+        this->commands_.clear();
+
       this->node_state = ClientState::IDLE;
     }
 

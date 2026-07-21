@@ -86,6 +86,20 @@ namespace esphome
             {
                 return uxQueueMessagesWaiting(queue_handle_) == 0;
             }
+
+            size_t size() const
+            {
+                return uxQueueMessagesWaiting(queue_handle_);
+            }
+
+            void clear()
+            {
+                Command *cmd = nullptr;
+                while (xQueueReceive(queue_handle_, &cmd, 0) == pdTRUE)
+                {
+                    delete cmd;
+                }
+            }
         };
     } // namespace danfoss_eco
 } // namespace esphome

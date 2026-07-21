@@ -46,6 +46,7 @@ namespace esphome
 
       void set_secret_key(const string &);
       void set_pin_code(const string &);
+      void set_request_timeout_ms(uint32_t timeout_ms);
 
     protected:
       void control(const ClimateCall &call) override;
@@ -58,6 +59,7 @@ namespace esphome
 
       void on_read(esp_ble_gattc_cb_param_t::gattc_read_char_evt_param);
       void on_write(esp_ble_gattc_cb_param_t::gattc_write_evt_param);
+      void request_device_state_();
 
       shared_ptr<Xxtea> xxtea;
 
@@ -71,10 +73,23 @@ namespace esphome
       set<shared_ptr<DeviceProperty>> properties{nullptr};
 
     private:
+      void teardown_connection_(bool clear_queue, bool reset_backoff, const char *reason);
+
       ESPPreferenceObject secret_pref_;
       uint32_t pin_code_ = 0;
 
       uint8_t request_counter_ = 0;
+      bool request_watchdog_active_ = false;
+      uint32_t request_watchdog_started_ms_ = 0;
+      uint32_t request_watchdog_timeout_ms_ = 15000;
+      uint32_t request_timeout_ms_ = 15000;
+      uint8_t timeout_backoff_level_ = 0;
+      bool preserve_backoff_on_next_disconnect_ = false;
+      bool scheduled_poll_pending_ = false;
+      uint32_t scheduled_poll_due_ms_ = 0;
+      uint16_t poll_spread_ms_ = 0;
+      static constexpr uint32_t REQUEST_TIMEOUT_MIN_MS = 1000;
+      static constexpr uint32_t REQUEST_TIMEOUT_MAX_MS = 60000;
       CommandQueue commands_;
     };
 
