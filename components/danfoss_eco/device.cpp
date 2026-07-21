@@ -10,6 +10,8 @@ namespace esphome
   namespace danfoss_eco
   {
     static bool startup_marker_logged = false;
+    static Device *connect_slot_owner = nullptr;
+    static uint32_t connect_slot_available_at_ms = 0;
 
     static uint32_t now_ms()
     {
@@ -21,7 +23,7 @@ namespace esphome
       if (!startup_marker_logged)
       {
         startup_marker_logged = true;
-        ESP_LOGI(TAG, "[BLE_FLOW][BUILD_MARKER] danfoss_eco_ble_hardening_v3 compiled %s %s", __DATE__, __TIME__);
+        ESP_LOGI(TAG, "[BLE_FLOW][BUILD_MARKER] danfoss_eco_ble_hardening_v4 compiled %s %s", __DATE__, __TIME__);
       }
 
       shared_ptr<MyComponent> sp_this(this);
@@ -62,7 +64,6 @@ namespace esphome
       {
         if (this->node_state == ClientState::IDLE && !this->commands_.empty())
         {
-          ESP_LOGD(TAG, "[%s][BLE_FLOW] idle with queued work (%u), reconnecting", this->get_name().c_str(), static_cast<unsigned>(this->commands_.size()));
           this->connect();
         }
         return;
@@ -363,10 +364,39 @@ namespace esphome
 
     void Device::connect()
     {
+      const uint32_t now = now_ms();
+
       if (this->node_state == ClientState::ESTABLISHED)
       {
         return;
       }
+
+      if (static_cast<int32_t>(now - this->last_connect_attempt_ms_) < static_cast<int32_t>(CONNECT_ATTEMPT_INTERVAL_MS))
+      {
+        return;
+      }
+
+      if (connect_slot_owner != nullptr && connect_slot_owner != this)
+      {
+        this->last_connect_attempt_ms_ = now;
+        ESP_LOGV(TAG, "[%s][BLE_FLOW] connect slot busy, waiting", this->get_name().c_str());
+        return;
+      }
+
+      if (connect_slot_owner == nullptr)
+      {
+        if (static_cast<int32_t>(now - connect_slot_available_at_ms) < 0)
+        {
+          this->last_connect_attempt_ms_ = now;
+          ESP_LOGV(TAG, "[%s][BLE_FLOW] connect slot cooling down", this->get_name().c_str());
+          return;
+        }
+
+        connect_slot_owner = this;
+        ESP_LOGD(TAG, "[%s][BLE_FLOW] acquired connect slot", this->get_name().c_str());
+      }
+
+      this->last_connect_attempt_ms_ = now;
 
       if (this->xxtea->status() == XXTEA_STATUS_NOT_INITIALIZED)
         ESP_LOGI(TAG, "[%s] Short press Danfoss Eco hardware button NOW in order to allow reading the secret key", this->get_name().c_str());
@@ -398,6 +428,13 @@ namespace esphome
       if (this->request_counter_ > 0 || !this->commands_.empty())
       {
         ESP_LOGW(TAG, "[%s][BLE_FLOW] teardown (%s): pending=%u, queued=%u, clear_queue=%d, reset_backoff=%d", this->get_name().c_str(), reason, static_cast<unsigned>(this->request_counter_), static_cast<unsigned>(this->commands_.size()), clear_queue, reset_backoff);
+      }
+
+      if (connect_slot_owner == this)
+      {
+        connect_slot_owner = nullptr;
+        connect_slot_available_at_ms = now_ms() + CONNECT_SLOT_COOLDOWN_MS;
+        ESP_LOGD(TAG, "[%s][BLE_FLOW] released connect slot, cooldown=%u ms", this->get_name().c_str(), static_cast<unsigned>(CONNECT_SLOT_COOLDOWN_MS));
       }
 
       this->parent()->set_enabled(false);

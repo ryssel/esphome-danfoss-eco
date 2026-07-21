@@ -88,8 +88,11 @@ namespace esphome
       bool scheduled_poll_pending_ = false;
       uint32_t scheduled_poll_due_ms_ = 0;
       uint16_t poll_spread_ms_ = 0;
+      uint32_t last_connect_attempt_ms_ = 0;
       static constexpr uint32_t REQUEST_TIMEOUT_MIN_MS = 1000;
       static constexpr uint32_t REQUEST_TIMEOUT_MAX_MS = 60000;
+      static constexpr uint32_t CONNECT_SLOT_COOLDOWN_MS = 700;
+      static constexpr uint32_t CONNECT_ATTEMPT_INTERVAL_MS = 1000;
       CommandQueue commands_;
     };
 
