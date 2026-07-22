@@ -99,6 +99,14 @@ Configuration options
 - Use `20s` to `30s` in noisy BLE environments to reduce false watchdog timeouts.
 - The component applies capped backoff after repeated timeouts and resets to the configured value after disconnect/recovery.
 
+BLE connection stability behavior:
+
+- Connection attempts are serialized across Danfoss devices (single global connect slot).
+- After BLE open failures (for example status `133` / `0x85`), the affected device applies a per-device retry cooldown (currently 5 seconds) before trying again.
+- This cooldown improves resilience even if `ble_client` is accidentally left with `auto_connect: true`.
+- `auto_connect` is a generic `ble_client` option designed for convenience and automatic reconnect in always-on BLE integrations.
+- For this component, especially with multiple Danfoss devices, `auto_connect: false` is recommended so the component can fully control connect/disconnect timing.
+
 > **NOTE:** Find more configuration examples in the repository root folder.
 
 
