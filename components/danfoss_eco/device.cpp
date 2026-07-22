@@ -214,7 +214,11 @@ namespace esphome
         if (param->open.status == ESP_GATT_OK)
           ESP_LOGV(TAG, "[%s] open, conn_id=%d", this->get_name().c_str(), param->open.conn_id);
         else
+        {
+          this->open_fail_cooldown_until_ms_ = now_ms() + OPEN_FAIL_RETRY_COOLDOWN_MS;
           ESP_LOGW(TAG, "[%s] failed to open, conn_id=%d, status=%#04x", this->get_name().c_str(), param->open.conn_id, param->open.status);
+          ESP_LOGW(TAG, "[%s][BLE_FLOW] applying open-fail cooldown: %u ms", this->get_name().c_str(), static_cast<unsigned>(OPEN_FAIL_RETRY_COOLDOWN_MS));
+        }
         break;
 
       case ESP_GATTC_CLOSE_EVT:
@@ -368,6 +372,17 @@ namespace esphome
 
       if (this->node_state == ClientState::ESTABLISHED)
       {
+        return;
+      }
+
+      if (static_cast<int32_t>(now - this->open_fail_cooldown_until_ms_) < 0)
+      {
+        if (static_cast<int32_t>(now - this->last_connect_attempt_ms_) >= static_cast<int32_t>(CONNECT_ATTEMPT_INTERVAL_MS))
+        {
+          this->last_connect_attempt_ms_ = now;
+          const uint32_t remaining_ms = this->open_fail_cooldown_until_ms_ - now;
+          ESP_LOGV(TAG, "[%s][BLE_FLOW] open-fail cooldown active: %u ms remaining", this->get_name().c_str(), static_cast<unsigned>(remaining_ms));
+        }
         return;
       }
 
